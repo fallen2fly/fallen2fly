@@ -62,7 +62,13 @@ all_data = fetch_data(tickers, period=f"{history_days}d")
 
 # --- Stock selector ---
 selected_stock = st.sidebar.selectbox("Select a stock to view", tickers)
-hist = all_data[selected_stock].copy()
+
+# Safely extract historical data
+try:
+    hist = all_data[selected_stock].copy()
+except:
+    st.warning(f"No data found for {selected_stock}.")
+    hist = pd.DataFrame(columns=['Open','High','Low','Close','Volume'])
 
 # --- Technical Indicators ---
 hist['SMA_20'] = hist['Close'].rolling(20).mean()
@@ -100,22 +106,38 @@ with tab2:
 
 # --- Tab 3: Next Day Prediction ---
 with tab3:
-    hist['Day'] = range(len(hist))
-    model = LinearRegression()
-    model.fit(hist[['Day']], hist['Close'])
-    pred = model.predict([[len(hist)]])
-    st.metric(label=f"{selected_stock} Predicted Next Close", value=f"${pred[0]:.2f}", delta=f"${pred[0]-hist['Close'][-1]:.2f}")
+    st.subheader(f"{selected_stock} Next Day Prediction")
+    
+    # Prepare data safely
+    hist_model = hist[['Close']].copy().reset_index()
+    hist_model['Day'] = range(len(hist_model))
+    hist_model = hist_model.dropna(subset=['Close'])
+    
+    if len(hist_model) < 2:
+        st.warning("Not enough data to make prediction.")
+    else:
+        model = LinearRegression()
+        X = hist_model[['Day']]
+        y = hist_model['Close']
+        model.fit(X, y)
+        pred = model.predict([[len(hist_model)]])
+        st.metric(
+            label=f"{selected_stock} Predicted Next Close",
+            value=f"${pred[0]:.2f}",
+            delta=f"${pred[0]-y.iloc[-1]:.2f}"
+        )
 
 # --- Tab 4: Multi-Day Forecast ---
 with tab4:
     st.subheader(f"{selected_stock} Multi-Day Forecast (Next 7 Days)")
-    X = np.arange(len(hist)).reshape(-1,1)
-    y = hist['Close'].values
-    lr = LinearRegression()
-    lr.fit(X,y)
-    future_days = np.arange(len(hist), len(hist)+7).reshape(-1,1)
-    predictions = lr.predict(future_days)
-    st.write(pd.DataFrame({"Day": [i+1 for i in range(7)], "Predicted Close": predictions}))
+    if len(hist_model) >= 2:
+        lr = LinearRegression()
+        lr.fit(hist_model[['Day']], hist_model['Close'])
+        future_days = np.arange(len(hist_model), len(hist_model)+7).reshape(-1,1)
+        predictions = lr.predict(future_days)
+        st.write(pd.DataFrame({"Day": [i+1 for i in range(7)], "Predicted Close": predictions}))
+    else:
+        st.warning("Not enough data for multi-day forecast.")
 
 # --- Tab 5: Company Info ---
 with tab5:
@@ -124,7 +146,7 @@ with tab5:
     try:
         current_price = yf.Ticker(selected_stock).history(period="1d", interval="1m")['Close'][-1]
     except:
-        current_price = hist['Close'][-1]
+        current_price = hist['Close'].iloc[-1] if not hist.empty else 0
     st.write({
         "Name": info.get("shortName"),
         "Sector": info.get("sector"),
@@ -133,9 +155,9 @@ with tab5:
         "Open": info.get("open"),
         "Prev Close": info.get("previousClose"),
         "Realtime Price": current_price,
-        "RSI": round(hist['RSI'][-1],2),
-        "Buy Signal": hist['Buy_Signal'][-1],
-        "Sell Signal": hist['Sell_Signal'][-1]
+        "RSI": round(hist['RSI'].iloc[-1],2) if not hist.empty else None,
+        "Buy Signal": hist['Buy_Signal'].iloc[-1] if not hist.empty else False,
+        "Sell Signal": hist['Sell_Signal'].iloc[-1] if not hist.empty else False
     })
 
 # --- Tab 6: Portfolio Simulation ---
@@ -148,7 +170,7 @@ with tab6:
         t = item['ticker']
         try:
             df = all_data[t].copy()
-            cp = df['Close'][-1]
+            cp = df['Close'].iloc[-1]
         except:
             cp = 0
         value = item['shares']*cp
@@ -179,18 +201,21 @@ if news_api_key:
 # --- Tab 8: Alerts ---
 with tab8:
     st.subheader(f"{selected_stock} Alerts")
-    buy_alert = hist['Buy_Signal'][-1]
-    sell_alert = hist['Sell_Signal'][-1]
-    if buy_alert:
-        st.success(f"{selected_stock}: BUY signal triggered!")
-    if sell_alert:
-        st.warning(f"{selected_stock}: SELL signal triggered!")
-    if not buy_alert and not sell_alert:
-        st.info(f"{selected_stock}: No alerts currently.")
+    if not hist.empty:
+        buy_alert = hist['Buy_Signal'].iloc[-1]
+        sell_alert = hist['Sell_Signal'].iloc[-1]
+        if buy_alert:
+            st.success(f"{selected_stock}: BUY signal triggered!")
+        if sell_alert:
+            st.warning(f"{selected_stock}: SELL signal triggered!")
+        if not buy_alert and not sell_alert:
+            st.info(f"{selected_stock}: No alerts currently.")
+    else:
+        st.info("No alerts available due to missing data.")
 
 # --- Tab 9: Market Overview ---
 with tab9:
-    st.subheader("Top Gainers / Losers (NASDAQ)")
+    st.subheader("Market Overview (NASDAQ)")
     try:
         market = yf.download("^IXIC", period="1d", interval="1d")
         st.line_chart(market['Close'])
@@ -200,9 +225,12 @@ with tab9:
 # --- Tab 10: Download Data ---
 with tab10:
     st.subheader("Download Data")
-    st.download_button(
-        label="Download Historical Data CSV",
-        data=hist.to_csv().encode('utf-8'),
-        file_name=f"{selected_stock}_historical.csv",
-        mime="text/csv"
-    )
+    if not hist.empty:
+        st.download_button(
+            label="Download Historical Data CSV",
+            data=hist.to_csv().encode('utf-8'),
+            file_name=f"{selected_stock}_historical.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No historical data to download.")
