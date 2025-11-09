@@ -2,47 +2,47 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-from streamlit_autorefresh import st_autorefresh
 from sklearn.linear_model import LinearRegression
-import numpy as np
+from streamlit_autorefresh import st_autorefresh
+import requests
+from datetime import datetime
 
 # --- Auto-refresh ---
 update_interval = 60
 st_autorefresh(interval=update_interval*1000, key="auto_refresh")
 
-# --- Page config ---
-st.set_page_config(page_title="Fallen2Fly Ultimate Stock Tracker", layout="wide")
+# --- Page setup ---
+st.set_page_config(page_title="Fallen2Fly Ultimate AI Stock Dashboard", layout="wide")
 st.title("Fallen2Fly Ultimate AI Stock Dashboard")
-st.write("Track multiple stocks, see historical data, technical indicators, predictions, and portfolio performance!")
+st.write("Track any stock, see historical data, technical indicators, AI predictions, news, and simulate your portfolio!")
 
 # --- Sidebar ---
 st.sidebar.header("Settings")
 tickers_input = st.sidebar.text_area(
-    "Enter tickers (comma separated, up to 10 recommended):",
-    "AAPL, TSLA, MSFT, GOOGL, AMZN, NVDA, FB, JPM, BAC, NFLX"
+    "Enter tickers (comma separated, e.g., AAPL, TSLA, MSFT):",
+    "AAPL, TSLA, MSFT, GOOGL, AMZN"
 )
-tickers = [t.strip().upper() for t in tickers_input.split(",")][:10]
+tickers = [t.strip().upper() for t in tickers_input.split(",")]
 
-history_days = st.sidebar.number_input("Historical data days (max 7300):", 30, 7300, 365)
+history_days = st.sidebar.number_input("Days of historical data (max 10000):", 30, 10000, 365)
 
 portfolio_input = st.sidebar.text_area(
     "Portfolio (ticker,shares,buy_price per line):",
     "AAPL,10,150\nTSLA,5,700"
 )
 
-# --- Tabs ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Historical Chart", "Indicators", "Next Day Prediction", "Company Info", "Portfolio"])
+# Optional: news API key
+news_api_key = st.secrets.get("NEWS_API_KEY") if "NEWS_API_KEY" in st.secrets else None
 
-# --- Portfolio processing ---
+# --- Tabs ---
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Historical Chart","Indicators","Next Day Prediction","Company Info","Portfolio","News Feed"])
+
+# --- Portfolio parsing ---
 portfolio = []
 for line in portfolio_input.splitlines():
     try:
         t, shares, buy_price = line.split(",")
-        portfolio.append({
-            "ticker": t.strip().upper(),
-            "shares": float(shares),
-            "buy_price": float(buy_price)
-        })
+        portfolio.append({"ticker": t.strip().upper(), "shares": float(shares), "buy_price": float(buy_price)})
     except:
         continue
 
@@ -55,7 +55,7 @@ for ticker in tickers:
             st.warning(f"No data for {ticker}")
             continue
 
-        # --- Technical indicators ---
+        # --- Technical Indicators ---
         hist['SMA_20'] = hist['Close'].rolling(20).mean()
         hist['EMA_20'] = hist['Close'].ewm(span=20, adjust=False).mean()
         hist['Upper_BB'] = hist['SMA_20'] + 2*hist['Close'].rolling(20).std()
@@ -109,10 +109,11 @@ for ticker in tickers:
                 "Market Cap": info.get("marketCap"),
                 "Open": info.get("open"),
                 "Prev Close": info.get("previousClose"),
-                "Realtime Price": current_price
+                "Realtime Price": current_price,
+                "RSI": round(hist['RSI'][-1],2)
             })
 
-        # --- Tab 5: Portfolio ---
+        # --- Tab 5: Portfolio Simulation ---
         with tab5:
             st.subheader("Portfolio Simulation")
             data = []
@@ -123,7 +124,10 @@ for ticker in tickers:
                 shares = item['shares']
                 buy = item['buy_price']
                 stk = yf.Ticker(t)
-                cp = stk.history(period="1d", interval="1m")['Close'][-1]
+                try:
+                    cp = stk.history(period="1d", interval="1m")['Close'][-1]
+                except:
+                    cp = 0
                 value = shares*cp
                 cost = shares*buy
                 total_value += value
@@ -135,6 +139,19 @@ for ticker in tickers:
                 st.write(f"Total P/L: ${total_value-total_cost:.2f}")
             else:
                 st.write("No valid portfolio data.")
+
+        # --- Tab 6: News Feed (optional) ---
+        if news_api_key:
+            with tab6:
+                st.subheader(f"{ticker} Latest News")
+                url = f"https://newsapi.org/v2/everything?q={ticker}&sortBy=publishedAt&apiKey={news_api_key}"
+                try:
+                    r = requests.get(url)
+                    news = r.json().get("articles", [])
+                    for article in news[:10]:
+                        st.markdown(f"[{article['title']}]({article['url']}) - {article['source']['name']}")
+                except:
+                    st.write("Error fetching news. Check API key or connectivity.")
 
         st.divider()
 
