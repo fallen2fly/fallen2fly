@@ -4,3 +4,5 @@ scikit-learn
 pandas
 plotly
 streamlit-autorefresh
+requests
+textblob
