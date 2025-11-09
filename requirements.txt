@@ -9,3 +9,4 @@ requests==2.32.0
 textblob==0.17.1
 nltk==3.8.1
 streamlit-autorefresh==0.0.4
+# reinstall trigger
