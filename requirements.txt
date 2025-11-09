@@ -7,3 +7,4 @@ numpy==1.26.0
 requests==2.32.0
 textblob==0.17.1
 streamlit-autorefresh==0.1.2
+nltk==3.8.1
