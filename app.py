@@ -10,24 +10,23 @@ from textblob import TextBlob
 from streamlit_autorefresh import st_autorefresh
 
 # --- Auto-refresh ---
-update_interval = 60  # seconds
+update_interval = 60
 st_autorefresh(interval=update_interval*1000, key="auto_refresh")
 
-# --- Page config ---
+# --- Page setup ---
 st.set_page_config(page_title="Fallen2Fly Ultimate AI Stock Dashboard", layout="wide")
 st.title("Fallen2Fly Ultimate AI Stock Dashboard")
-st.write("Track any stock, see historical data, technical indicators, AI predictions, portfolio simulation, and news sentiment!")
+st.write("Full-featured AI Stock Research Platform: charts, predictions, news, portfolio, alerts, multi-market support.")
 
-# --- Sidebar ---
+# --- Sidebar Settings ---
 st.sidebar.header("Settings")
 tickers_input = st.sidebar.text_area(
-    "Enter tickers (comma separated, e.g., AAPL, TSLA, MSFT):",
-    "AAPL, TSLA, MSFT, GOOGL, AMZN"
+    "Enter tickers (comma separated):",
+    "AAPL, TSLA, MSFT, GOOGL, AMZN, NVDA, FB, JPM, BAC, NFLX"
 )
 tickers = [t.strip().upper() for t in tickers_input.split(",")]
 
-history_days = st.sidebar.number_input("Historical data days (max 10000):", 30, 10000, 365)
-
+history_days = st.sidebar.number_input("Days of historical data (max 10000):", 30, 10000, 365)
 portfolio_input = st.sidebar.text_area(
     "Portfolio (ticker,shares,buy_price per line):",
     "AAPL,10,150\nTSLA,5,700"
@@ -36,12 +35,14 @@ portfolio_input = st.sidebar.text_area(
 news_api_key = st.secrets.get("NEWS_API_KEY") if "NEWS_API_KEY" in st.secrets else None
 
 # --- Tabs ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tabs = st.tabs([
     "Historical Chart","Indicators","Next Day Prediction","Multi-Day Forecast",
-    "Company Info","Portfolio","News & Sentiment"
+    "Company Info","Portfolio","News & Sentiment","Alerts","Market Overview","Download Data"
 ])
 
-# --- Portfolio parsing ---
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = tabs
+
+# --- Portfolio Parsing ---
 portfolio = []
 for line in portfolio_input.splitlines():
     try:
@@ -49,6 +50,26 @@ for line in portfolio_input.splitlines():
         portfolio.append({"ticker": t.strip().upper(), "shares": float(shares), "buy_price": float(buy_price)})
     except:
         continue
+
+# --- Function: Technical Indicators ---
+def calculate_indicators(df):
+    df['SMA_20'] = df['Close'].rolling(20).mean()
+    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+    df['Upper_BB'] = df['SMA_20'] + 2*df['Close'].rolling(20).std()
+    df['Lower_BB'] = df['SMA_20'] - 2*df['Close'].rolling(20).std()
+    delta = df['Close'].diff()
+    gain = delta.clip(lower=0)
+    loss = -1*delta.clip(upper=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    df['RSI'] = 100 - (100/(1+rs))
+    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = ema12 - ema26
+    df['Buy_Signal'] = (df['RSI'] < 30) & (df['Close'] < df['SMA_20'])
+    df['Sell_Signal'] = (df['RSI'] > 70) & (df['Close'] > df['SMA_20'])
+    return df
 
 # --- Loop through tickers ---
 for ticker in tickers:
@@ -59,27 +80,7 @@ for ticker in tickers:
             st.warning(f"No data for {ticker}")
             continue
 
-        # --- Technical Indicators ---
-        hist['SMA_20'] = hist['Close'].rolling(20).mean()
-        hist['EMA_20'] = hist['Close'].ewm(span=20, adjust=False).mean()
-        hist['Upper_BB'] = hist['SMA_20'] + 2*hist['Close'].rolling(20).std()
-        hist['Lower_BB'] = hist['SMA_20'] - 2*hist['Close'].rolling(20).std()
-
-        delta = hist['Close'].diff()
-        gain = delta.clip(lower=0)
-        loss = -1*delta.clip(upper=0)
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        rs = avg_gain / avg_loss
-        hist['RSI'] = 100 - (100/(1+rs))
-
-        ema12 = hist['Close'].ewm(span=12, adjust=False).mean()
-        ema26 = hist['Close'].ewm(span=26, adjust=False).mean()
-        hist['MACD'] = ema12 - ema26
-
-        # --- Buy/Sell Signals ---
-        hist['Buy_Signal'] = (hist['RSI'] < 30) & (hist['Close'] < hist['SMA_20'])
-        hist['Sell_Signal'] = (hist['RSI'] > 70) & (hist['Close'] > hist['SMA_20'])
+        hist = calculate_indicators(hist)
 
         # --- Tab 1: Historical Chart ---
         with tab1:
@@ -97,7 +98,7 @@ for ticker in tickers:
             st.subheader(f"{ticker} Indicators")
             st.line_chart(hist[['RSI','MACD']])
 
-        # --- Tab 3: Next Day Prediction (Linear Regression) ---
+        # --- Tab 3: Next Day Prediction ---
         with tab3:
             hist['Day'] = range(len(hist))
             model = LinearRegression()
@@ -105,16 +106,16 @@ for ticker in tickers:
             pred = model.predict([[len(hist)]])
             st.metric(label=f"{ticker} Predicted Next Close", value=f"${pred[0]:.2f}", delta=f"${pred[0]-hist['Close'][-1]:.2f}")
 
-        # --- Tab 4: Multi-Day Forecast (LSTM placeholder) ---
+        # --- Tab 4: Multi-Day Forecast (Simple placeholder for LSTM) ---
         with tab4:
-            st.subheader(f"{ticker} Multi-Day Forecast (Next 5 Days, simple linear trend)")
+            st.subheader(f"{ticker} Multi-Day Forecast (Next 7 Days)")
             X = np.arange(len(hist)).reshape(-1,1)
             y = hist['Close'].values
             lr = LinearRegression()
             lr.fit(X,y)
-            future_days = np.arange(len(hist), len(hist)+5).reshape(-1,1)
+            future_days = np.arange(len(hist), len(hist)+7).reshape(-1,1)
             predictions = lr.predict(future_days)
-            st.write(pd.DataFrame({"Day": [i+1 for i in range(5)], "Predicted Close": predictions}))
+            st.write(pd.DataFrame({"Day": [i+1 for i in range(7)], "Predicted Close": predictions}))
 
         # --- Tab 5: Company Info ---
         with tab5:
@@ -161,13 +162,11 @@ for ticker in tickers:
                 st.dataframe(pd.DataFrame(data))
                 st.write(f"Total Portfolio Value: ${total_value:.2f}")
                 st.write(f"Total P/L: ${total_value-total_cost:.2f}")
-            else:
-                st.write("No valid portfolio data.")
 
         # --- Tab 7: News & Sentiment ---
         if news_api_key:
             with tab7:
-                st.subheader(f"{ticker} Latest News with Sentiment")
+                st.subheader(f"{ticker} News with Sentiment")
                 url = f"https://newsapi.org/v2/everything?q={ticker}&sortBy=publishedAt&apiKey={news_api_key}"
                 try:
                     r = requests.get(url)
@@ -178,6 +177,37 @@ for ticker in tickers:
                         st.markdown(f"[{title}]({article['url']}) - {article['source']['name']} (Sentiment: {round(sentiment,2)})")
                 except:
                     st.write("Error fetching news. Check API key or connectivity.")
+
+        # --- Tab 8: Alerts ---
+        with tab8:
+            st.subheader(f"{ticker} Alerts")
+            buy_alert = hist['Buy_Signal'][-1]
+            sell_alert = hist['Sell_Signal'][-1]
+            if buy_alert:
+                st.success(f"{ticker}: BUY signal triggered!")
+            if sell_alert:
+                st.warning(f"{ticker}: SELL signal triggered!")
+            if not buy_alert and not sell_alert:
+                st.info(f"{ticker}: No alerts currently.")
+
+        # --- Tab 9: Market Overview ---
+        with tab9:
+            st.subheader("Top Gainers / Losers (NASDAQ)")
+            try:
+                market = yf.download("^IXIC", period="1d", interval="1d")
+                st.line_chart(market['Close'])
+            except:
+                st.write("Market overview data unavailable.")
+
+        # --- Tab 10: Download Data ---
+        with tab10:
+            st.subheader("Download Data")
+            st.download_button(
+                label="Download Historical Data CSV",
+                data=hist.to_csv().encode('utf-8'),
+                file_name=f"{ticker}_historical.csv",
+                mime="text/csv"
+            )
 
         st.divider()
 
