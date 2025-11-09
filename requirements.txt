@@ -1,40 +1,12 @@
-# Core web framework
 streamlit==1.39.0
-
-# Data manipulation
 pandas==2.2.3
 numpy==1.26.4
-
-# Machine learning
 scikit-learn==1.5.2
-
-# Optional deep learning support (may timeout on free Streamlit plans)
-tensorflow-cpu==2.17.0
-
-# Visualization
 plotly==5.24.1
-matplotlib==3.9.2
-seaborn==0.13.2
-
-# Data fetching / APIs
 yfinance==0.2.50
 requests==2.32.3
-
-# Utility libraries
-joblib==1.4.2
-python-dateutil==2.9.0
-pytz==2024.2
-
-# Clean output, progress bars, etc.
+matplotlib==3.9.2
+seaborn==0.13.2
 tqdm==4.66.5
-
-# Safety / Compatibility
-protobuf==4.25.4
 altair==5.4.1
-
-# Prevent TensorFlow conflicts
-grpcio==1.66.1
-h5py==3.11.0
-# Remove this line:
-# tensorflow-cpu==2.17.0
 
