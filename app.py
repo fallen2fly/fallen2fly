@@ -1,135 +1,164 @@
-import streamlit as st
+"""
+Stock Analyzer - app.py
+FastAPI application that fetches stock data (via yfinance), computes simple technical indicators
+(SMA, EMA, RSI) and combines them with fundamental/company information to produce
+an overall buy/sell/hold recommendation and an explanation.
+
+Usage:
+  1. Install dependencies:
+     pip install fastapi uvicorn yfinance pandas numpy requests jinja2
+
+  2. Run locally:
+     uvicorn stock_analyzer_app:app --reload
+
+Endpoints:
+  - GET /              -> simple HTML form for quick testing
+  - GET /analyze?symbol=SYMBOL&period=1y&interval=1d
+                       -> JSON analysis for the given ticker symbol
+
+Notes & extensions:
+  - You can plug in premium data sources (Alpha Vantage, IEX Cloud, Finnhub) to
+    improve fundamentals and ownership data.
+  - This is intentionally self-contained and conservative about external APIs.
+"""
+
+from fastapi import FastAPI, Query, Request, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+import yfinance as yf
 import pandas as pd
 import numpy as np
-import yfinance as yf
-import plotly.express as px
-from datetime import datetime, timedelta
-from sklearn.linear_model import LinearRegression
+from typing import Optional
+import datetime
 
-# ---------------------------
-# PAGE CONFIG
-# ---------------------------
-st.set_page_config(page_title="Fallen2Fly Stock Tracker", layout="wide")
+app = FastAPI(title="Stock Analyzer")
+templates = Jinja2Templates(directory=".")  # simple; only used for the root form
 
-# ---------------------------
-# HEADER
-# ---------------------------
-st.title("📈 Fallen2Fly Stock Tracker & Predictor")
-st.markdown("Real-time data, history, and machine learning forecasts for global stocks.")
 
-# ---------------------------
-# SIDEBAR
-# ---------------------------
-st.sidebar.header("Settings")
+class AnalysisResult(BaseModel):
+    symbol: str
+    date: str
+    technical_score: float
+    fundamental_score: float
+    combined_score: float
+    recommendation: str
+    reasons: list
+    technical: dict
+    fundamental: dict
 
-# Select stocks
-default_stocks = ["AAPL", "MSFT", "TSLA", "AMZN", "GOOG", "NVDA", "META", "NFLX", "JPM", "AMD"]
-stock_symbols = st.sidebar.text_input(
-    "Enter stock tickers (comma-separated):",
-    ",".join(default_stocks)
-).upper().split(",")
 
-# Select date range
-start_date = st.sidebar.date_input("Start Date", datetime.now() - timedelta(days=365))
-end_date = st.sidebar.date_input("End Date", datetime.now())
+# ----------------------- Technical indicator helpers -----------------------
 
-# Tabs
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Live Prices", "📉 Historical Data", "🤖 Predictions", "🧠 About"])
+def simple_moving_average(series: pd.Series, window: int) -> pd.Series:
+    return series.rolling(window=window).mean()
 
-# ---------------------------
-# TAB 1: Live Prices
-# ---------------------------
-with tab1:
-    st.header("📊 Live Stock Prices")
-    data_list = []
-    for symbol in stock_symbols:
-        try:
-            ticker = yf.Ticker(symbol.strip())
-            info = ticker.info
-            current_price = info.get("currentPrice") or info.get("regularMarketPrice")
-            previous_close = info.get("previousClose")
-            change = None if current_price is None or previous_close is None else round(((current_price - previous_close) / previous_close) * 100, 2)
-            data_list.append({
-                "Symbol": symbol.strip(),
-                "Company": info.get("longName", "Unknown"),
-                "Current Price": current_price,
-                "Change (%)": change
-            })
-        except Exception as e:
-            st.warning(f"⚠️ Could not fetch data for {symbol.strip()}: {e}")
 
-    if data_list:
-        df_live = pd.DataFrame(data_list)
-        st.dataframe(df_live, use_container_width=True)
-    else:
-        st.error("No valid data found. Check your stock symbols.")
+def exponential_moving_average(series: pd.Series, window: int) -> pd.Series:
+    return series.ewm(span=window, adjust=False).mean()
 
-# ---------------------------
-# TAB 2: Historical Data
-# ---------------------------
-with tab2:
-    st.header("📉 Historical Stock Data")
-    selected_stock = st.selectbox("Select a stock:", stock_symbols)
-    if selected_stock:
-        try:
-            hist = yf.download(selected_stock, start=start_date, end=end_date)
-            if not hist.empty:
-                hist.reset_index(inplace=True)
-                fig = px.line(hist, x="Date", y="Close", title=f"{selected_stock} Closing Prices")
-                st.plotly_chart(fig, use_container_width=True)
-                st.dataframe(hist.tail(20), use_container_width=True)
-            else:
-                st.warning("No historical data found for that date range.")
-        except Exception as e:
-            st.error(f"Error loading data: {e}")
 
-# ---------------------------
-# TAB 3: Machine Learning Predictions
-# ---------------------------
-with tab3:
-    st.header("🤖 Stock Price Prediction (Linear Regression)")
-    symbol = st.selectbox("Pick a stock to predict:", stock_symbols, key="predict_stock")
-    days_to_predict = st.slider("Days to predict ahead:", 1, 30, 7)
+def compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -1 * delta.clip(upper=0)
+    avg_gain = gain.rolling(window=window, min_periods=window).mean()
+    avg_loss = loss.rolling(window=window, min_periods=window).mean()
+    rs = avg_gain / (avg_loss + 1e-9)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-    try:
-        df = yf.download(symbol, start=start_date, end=end_date)
-        if len(df) > 10:
-            df.reset_index(inplace=True)
-            df["Day"] = np.arange(len(df))
-            X = df[["Day"]]
-            y = df["Close"]
 
-            model = LinearRegression()
-            model.fit(X, y)
+# ---------------------------- Scoring helpers ------------------------------
 
-            future_days = np.arange(len(df), len(df) + days_to_predict).reshape(-1, 1)
-            predictions = model.predict(future_days)
-            future_dates = [df["Date"].iloc[-1] + timedelta(days=i + 1) for i in range(days_to_predict)]
+def score_technical(df: pd.DataFrame) -> (float, dict):
+    """Return a technical score [0-100] and a details dict"""
+    close = df["Close"]
+    sma_short = simple_moving_average(close, 20)
+    sma_long = simple_moving_average(close, 50)
+    ema_short = exponential_moving_average(close, 12)
+    ema_long = exponential_moving_average(close, 26)
+    rsi = compute_rsi(close)
 
-            pred_df = pd.DataFrame({"Date": future_dates, "Predicted Close": predictions})
-            full_df = pd.concat([df[["Date", "Close"]].rename(columns={"Close": "Price"}), pred_df.rename(columns={"Predicted Close": "Price"})])
+    latest = {
+        "close": float(close.iloc[-1]),
+        "sma20": float(sma_short.iloc[-1]) if not np.isnan(sma_short.iloc[-1]) else None,
+        "sma50": float(sma_long.iloc[-1]) if not np.isnan(sma_long.iloc[-1]) else None,
+        "ema12": float(ema_short.iloc[-1]) if not np.isnan(ema_short.iloc[-1]) else None,
+        "ema26": float(ema_long.iloc[-1]) if not np.isnan(ema_long.iloc[-1]) else None,
+        "rsi14": float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else None,
+    }
 
-            fig_pred = px.line(full_df, x="Date", y="Price", title=f"{symbol} Price Prediction for Next {days_to_predict} Days")
-            st.plotly_chart(fig_pred, use_container_width=True)
-            st.dataframe(pred_df, use_container_width=True)
+    score = 50.0  # neutral baseline
+    reasons = []
+
+    # Trend: SMA cross
+    if latest["sma20"] and latest["sma50"]:
+        if latest["sma20"] > latest["sma50"]:
+            score += 15
+            reasons.append("Short-term SMA above long-term SMA (bullish trend)")
         else:
-            st.warning("Not enough data to predict. Try a longer date range.")
-    except Exception as e:
-        st.error(f"Error during prediction: {e}")
+            score -= 15
+            reasons.append("Short-term SMA below long-term SMA (bearish trend)")
 
-# ---------------------------
-# TAB 4: About
-# ---------------------------
-with tab4:
-    st.header("🧠 About Fallen2Fly")
-    st.markdown("""
-    **Fallen2Fly** is a real-time stock tracker and predictor web app built using:
-    - 📊 **Streamlit** for UI  
-    - 🧮 **scikit-learn** for predictions  
-    - 💹 **Plotly** for visualizations  
-    - 🌎 **Yahoo Finance API (yfinance)** for data  
-    ---
-    🔥 Designed for learning, analysis, and financial education — not trading advice.
-    """)
+    # Momentum: EMA cross
+    if latest["ema12"] and latest["ema26"]:
+        if latest["ema12"] > latest["ema26"]:
+            score += 10
+            reasons.append("Short EMAs above long EMAs (positive momentum)")
+        else:
+            score -= 10
+            reasons.append("Short EMAs below long EMAs (negative momentum)")
 
-    st.markdown("Created by [You 🚀] for finance & data science experimentation.")
+    # RSI
+    if latest["rsi14"] is not None:
+        if latest["rsi14"] < 30:
+            score += 8
+            reasons.append("RSI indicates oversold (possible buy opportunity)")
+        elif latest["rsi14"] > 70:
+            score -= 8
+            reasons.append("RSI indicates overbought (caution for buyers)")
+        else:
+            reasons.append("RSI neutral")
+
+    # Price vs EMA50
+    if latest["ema26"]:
+        diff_pct = (latest["close"] - latest["ema26"]) / latest["ema26"]
+        if diff_pct > 0.10:
+            score -= 5
+            reasons.append("Price significantly above long EMA (risk of pullback)")
+        elif diff_pct < -0.10:
+            score += 5
+            reasons.append("Price significantly below long EMA (potential value)")
+
+    # Clamp
+    score = max(0, min(100, score))
+
+    technical = {
+        "latest": latest,
+        "sma20_series_last_5": sma_short.dropna().iloc[-5:].tolist() if len(sma_short.dropna()) >= 5 else sma_short.dropna().tolist(),
+        "rsi14_series_last_5": rsi.dropna().iloc[-5:].tolist() if len(rsi.dropna()) >= 5 else rsi.dropna().tolist(),
+    }
+
+    return score, {"score": score, "reasons": reasons, "technical": technical}
+
+
+def score_fundamental(info: dict) -> (float, dict):
+    """Return a fundamental score [0-100] and details dict. Uses fields from yfinance Ticker.info when available."""
+    score = 50.0
+    reasons = []
+    details = {}
+
+    # Market cap
+    market_cap = info.get("marketCap")
+    if market_cap:
+        details["marketCap"] = market_cap
+        if market_cap > 50_000_000_000:
+            score += 8
+            reasons.append("Large market cap (established company)")
+        elif market_cap < 500_000_000:
+            score -= 5
+            reasons.append("Small market cap (higher risk)")
+
+    # Profitability
+    pr
